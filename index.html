@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Week Blocker</title>
+<meta name="theme-color" content="#14161B">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Crect width='200' height='200' rx='44' fill='%2314161B'/%3E%3Ctext x='100' y='130' font-size='100' text-anchor='middle' fill='%23C1502E' font-family='Georgia,serif'%3EW%3C/text%3E%3C/svg%3E">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Week Blocker">
+<style>
+  :root {
+    --canvas:#F2F3F5; --surface:#FFFFFF; --ink:#14161B; --muted:#5A6070;
+    --faint:#9298A5; --border:#E2E4E9; --accent:#C1502E; --accentSoft:#FBE7DD; --sunken:#FAFAFB;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--canvas); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button { font-family:inherit; cursor:pointer; }
+  .serif { font-family: ui-serif, Georgia, serif; }
+  .mono { font-family: ui-monospace, monospace; }
+  #app { max-width:760px; margin:0 auto; padding:20px 14px 60px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:18px; }
+  .btn { border-radius:10px; padding:8px 12px; font-size:12.5px; font-weight:600; border:1px solid var(--border); background:var(--surface); }
+  .chip { display:flex; align-items:center; gap:6px; border-radius:20px; padding:7px 8px 7px 12px; font-size:13px; font-weight:600; cursor:pointer; border:2px solid transparent; }
+  .chip.selected { border:2px solid #1E2421; box-shadow:0 0 0 3px rgba(30,36,33,0.12); }
+  .chip .icon { opacity:0.8; display:flex; padding:2px; }
+  .cell { height:34px; margin:1.5px; border-radius:6px; cursor:pointer; display:flex; align-items:center; justify-content:center; background:#fff; border:1px solid var(--border); font-size:9px; font-weight:700; text-align:center; overflow:hidden; }
+  .weekgrid { display:grid; min-width:480px; }
+  .bar-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:12px; }
+  .bar-track { flex:1; background:var(--sunken); border-radius:6px; height:16px; overflow:hidden; }
+  .bar-fill { height:100%; border-radius:6px; }
+  .hm-cell { width:12px; height:12px; border-radius:3px; flex-shrink:0; }
+  .icon-btn { background:transparent; border:none; padding:6px; display:flex; color:var(--muted); }
+  input { font-family:inherit; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+(function(){
+  "use strict";
+  const DAY_LABELS = ["Sat","Sun","Mon","Tue","Wed","Thu","Fri"];
+  const START_HOUR = 6, END_HOUR = 24;
+  const HOURS = Array.from({length:END_HOUR-START_HOUR},(_,i)=>START_HOUR+i);
+  const PALETTE = [
+    {bg:"#2D5C56",text:"#F4F1EA"},{bg:"#C1502E",text:"#F4F1EA"},{bg:"#5B4B8A",text:"#F4F1EA"},
+    {bg:"#3E6B8A",text:"#F4F1EA"},{bg:"#8A6D2F",text:"#F4F1EA"},{bg:"#6B7A3D",text:"#F4F1EA"},
+    {bg:"#8A3E5C",text:"#F4F1EA"}
+  ];
+
+  const weekKeyFor = (date) => {
+    const d = new Date(date);
+    const diffToSat = (d.getDay()+1)%7;
+    d.setDate(d.getDate()-diffToSat);
+    d.setHours(0,0,0,0);
+    return d.toISOString().slice(0,10);
+  };
+  const formatHour = (h) => {
+    const period = (h<12||h===24) ? "AM" : "PM";
+    let display = h%12; if(display===0) display=12;
+    return display+period;
+  };
+  const dateForColumn = (weekKey,i) => { const d=new Date(weekKey+"T00:00:00"); d.setDate(d.getDate()+i); return d; };
+  const formatShortDate = (d) => d.toLocaleDateString(undefined,{month:"numeric",day:"numeric"});
+  const isSameDate = (a,b) => a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();
+  const hexToRgba = (hex,a) => { const h=hex.replace("#",""); const r=parseInt(h.slice(0,2),16),g=parseInt(h.slice(2,4),16),b=parseInt(h.slice(4,6),16); return `rgba(${r},${g},${b},${a})`; };
+  const esc = (s) => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+  function defaultTasks(){
+    return [
+      {id:"t1",name:"Sleep",color:0},
+      {id:"t2",name:"Study block",color:1},
+      {id:"t3",name:"Anki review",color:2},
+      {id:"t4",name:"Meals",color:4},
+    ];
+  }
+  function loadTasks(){ try{ const r=localStorage.getItem("wb_tasks"); return r?JSON.parse(r):defaultTasks(); }catch(e){ return defaultTasks(); } }
+  function saveTasks(t){ localStorage.setItem("wb_tasks",JSON.stringify(t)); }
+  function loadWeek(wk){ try{ const r=localStorage.getItem("wb_week_"+wk); return r?JSON.parse(r):{}; }catch(e){ return {}; } }
+  function saveWeek(wk,p){ localStorage.setItem("wb_week_"+wk,JSON.stringify(p)); }
+  function allWeekKeys(){
+    const keys=[];
+    for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.indexOf("wb_week_")===0) keys.push(k.slice(8)); }
+    return keys;
+  }
+
+  function buildDailyMap(){
+    const map = {};
+    for(const wk of allWeekKeys()){
+      const placements = loadWeek(wk);
+      for(const [cellKey,entry] of Object.entries(placements)){
+        if(!entry.done) continue;
+        const dayLabel = cellKey.split("-")[0];
+        const dayIndex = DAY_LABELS.indexOf(dayLabel);
+        if(dayIndex===-1) continue;
+        const dateKey = dateForColumn(wk,dayIndex).toISOString().slice(0,10);
+        map[dateKey] = map[dateKey] || {};
+        map[dateKey][entry.taskId] = (map[dateKey][entry.taskId]||0)+1;
+      }
+    }
+    return map;
+  }
+  function totalHoursForDate(map,dk){ const t=map[dk]; if(!t) return 0; return Object.values(t).reduce((s,h)=>s+h,0); }
+  function dailySeries(map,days,today){
+    const pts=[];
+    for(let i=days-1;i>=0;i--){ const d=new Date(today); d.setHours(0,0,0,0); d.setDate(d.getDate()-i); const dk=d.toISOString().slice(0,10); pts.push({date:dk,hours:totalHoursForDate(map,dk)}); }
+    return pts;
+  }
+  function weeklySeries(map,weeks,today){
+    const pts=[]; const curWk=weekKeyFor(today);
+    for(let i=weeks-1;i>=0;i--){ const d=new Date(curWk+"T00:00:00"); d.setDate(d.getDate()-i*7); const wk=weekKeyFor(d); let total=0;
+      for(let off=0;off<7;off++) total+=totalHoursForDate(map,dateForColumn(wk,off).toISOString().slice(0,10));
+      pts.push({weekKey:wk,hours:total}); }
+    return pts;
+  }
+  function monthlySeries(map,months,today){
+    const pts=[];
+    for(let i=months-1;i>=0;i--){ const d=new Date(today.getFullYear(),today.getMonth()-i,1); const mk=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`; let total=0;
+      for(const [dk,byTask] of Object.entries(map)) if(dk.indexOf(mk)===0) total+=Object.values(byTask).reduce((s,h)=>s+h,0);
+      pts.push({month:mk,hours:total}); }
+    return pts;
+  }
+  function subjectBreakdown(map){
+    const totals={};
+    for(const byTask of Object.values(map)) for(const [tid,h] of Object.entries(byTask)) totals[tid]=(totals[tid]||0)+h;
+    return Object.entries(totals).map(([taskId,hours])=>({taskId,hours})).sort((a,b)=>b.hours-a.hours);
+  }
+  function computeStreaks(map,today){
+    const studied = new Set(Object.keys(map).filter(k=>totalHoursForDate(map,k)>0));
+    if(studied.size===0) return {current:0,longest:0};
+    const sorted = Array.from(studied).sort();
+    let longest=1, run=1;
+    for(let i=1;i<sorted.length;i++){
+      const diff = Math.round((new Date(sorted[i]+"T00:00:00") - new Date(sorted[i-1]+"T00:00:00"))/86400000);
+      run = diff===1 ? run+1 : 1;
+      longest = Math.max(longest,run);
+    }
+    const cursor = new Date(today); cursor.setHours(0,0,0,0);
+    let current=0;
+    const todayKey = cursor.toISOString().slice(0,10);
+    if(!studied.has(todayKey)) cursor.setDate(cursor.getDate()-1);
+    while(studied.has(cursor.toISOString().slice(0,10))){ current++; cursor.setDate(cursor.getDate()-1); }
+    return {current,longest};
+  }
+  function heatmapGrid(map,weeks,today){
+    const curWk = weekKeyFor(today); const cols=[];
+    for(let w=weeks-1;w>=0;w--){ const d=new Date(curWk+"T00:00:00"); d.setDate(d.getDate()-w*7); const wk=weekKeyFor(d); const col=[];
+      for(let off=0;off<7;off++){ const dk=dateForColumn(wk,off).toISOString().slice(0,10); col.push({date:dk,hours:totalHoursForDate(map,dk)}); }
+      cols.push(col); }
+    return cols;
+  }
+  function intensityColor(h){
+    if(h<=0) return "var(--canvas)";
+    if(h<1) return "#F3D9CD";
+    if(h<=2) return "#E6AC96";
+    if(h<=4) return "#D37A56";
+    if(h<=6) return "#C1502E";
+    return "#8F3A20";
+  }
+
+  // ---- state ----
+  let state = {
+    tasks: loadTasks(),
+    weekKey: weekKeyFor(new Date()),
+    placements: {},
+    selectedTaskId: null,
+    eraseMode: false,
+    view: "planner",
+    confirmClear: false,
+    renamingId: null,
+    renameValue: "",
+    showAddForm: false,
+    newTaskName: "",
+  };
+  state.placements = loadWeek(state.weekKey);
+
+  function setState(patch){ Object.assign(state,patch); render(); }
+
+  function taskById(id){ return state.tasks.find(t=>t.id===id); }
+
+  function goWeek(delta){
+    const d = new Date(state.weekKey+"T00:00:00"); d.setDate(d.getDate()+delta);
+    const wk = weekKeyFor(d);
+    setState({weekKey:wk, placements:loadWeek(wk), confirmClear:false});
+  }
+  function goThisWeek(){ const wk=weekKeyFor(new Date()); setState({weekKey:wk, placements:loadWeek(wk), confirmClear:false}); }
+
+  function placeTask(cellKey,taskId){ state.placements = {...state.placements,[cellKey]:{taskId,done:false}}; saveWeek(state.weekKey,state.placements); render(); }
+  function clearCell(cellKey){ const n={...state.placements}; delete n[cellKey]; state.placements=n; saveWeek(state.weekKey,n); render(); }
+  function toggleDone(cellKey){ const e=state.placements[cellKey]; if(!e) return; state.placements={...state.placements,[cellKey]:{...e,done:!e.done}}; saveWeek(state.weekKey,state.placements); render(); }
+  function handleCellTap(cellKey){
+    const existing = state.placements[cellKey];
+    if(state.selectedTaskId){
+      if(existing && existing.taskId===state.selectedTaskId) clearCell(cellKey); else placeTask(cellKey,state.selectedTaskId);
+      return;
+    }
+    if(state.eraseMode){ if(existing) clearCell(cellKey); return; }
+    if(existing) toggleDone(cellKey);
+  }
+
+  function addTask(){
+    const name = state.newTaskName.trim();
+    if(!name) return;
+    const t = {id:"t"+Date.now(), name, color: state.tasks.length % PALETTE.length};
+    state.tasks = [...state.tasks, t];
+    saveTasks(state.tasks);
+    state.newTaskName=""; state.showAddForm=false;
+    render();
+  }
+  function deleteTask(id){
+    state.tasks = state.tasks.filter(t=>t.id!==id);
+    saveTasks(state.tasks);
+    const n={...state.placements};
+    Object.keys(n).forEach(k=>{ if(n[k] && n[k].taskId===id) delete n[k]; });
+    state.placements=n; saveWeek(state.weekKey,n);
+    if(state.selectedTaskId===id) state.selectedTaskId=null;
+    render();
+  }
+  function commitRename(){
+    const trimmed = state.renameValue.trim();
+    if(trimmed && state.renamingId){
+      state.tasks = state.tasks.map(t=> t.id===state.renamingId ? {...t,name:trimmed} : t);
+      saveTasks(state.tasks);
+    }
+    state.renamingId=null; state.renameValue="";
+    render();
+  }
+
+  function barRows(rows, maxOverride){
+    const max = maxOverride || Math.max(1, ...rows.map(r=>r.hours));
+    return rows.map(r => `
+      <div class="bar-row">
+        <div style="width:96px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(r.name)}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${(r.hours/max*100).toFixed(1)}%; background:${r.color||'var(--accent)'}"></div></div>
+        <div class="mono" style="width:30px; text-align:right; color:var(--faint);">${r.hours}h</div>
+      </div>`).join("");
+  }
+  function simpleChart(points, labelFn, color){
+    const max = Math.max(1, ...points.map(p=>p.hours));
+    return `<div style="display:flex; align-items:flex-end; gap:3px; height:120px; overflow-x:auto;">
+      ${points.map(p=>`
+        <div style="display:flex; flex-direction:column; align-items:center; flex-shrink:0; width:20px;" title="${labelFn(p)}: ${p.hours}h">
+          <div style="width:100%; height:${Math.max(2,(p.hours/max*90))}px; background:${color}; border-radius:3px 3px 0 0;"></div>
+          <div style="font-size:8px; color:var(--faint); margin-top:4px; white-space:nowrap;">${labelFn(p)}</div>
+        </div>`).join("")}
+    </div>`;
+  }
+
+  function renderChips(){
+    return state.tasks.map(task=>{
+      const c = PALETTE[task.color % PALETTE.length];
+      const isSelected = state.selectedTaskId===task.id;
+      if(state.renamingId===task.id){
+        return `<input data-rename-input="${task.id}" value="${esc(state.renameValue)}" autofocus
+          style="border:1.5px solid var(--accent); border-radius:20px; padding:6px 12px; font-size:13px; width:120px;">`;
+      }
+      return `<div class="chip" data-chip="${task.id}" style="background:${c.bg}; color:${c.text};" ${isSelected?'data-selected="1"':''}>
+        ${esc(task.name)}
+        <span class="icon" data-rename="${task.id}" title="Rename">✎</span>
+        <span class="icon" data-delete="${task.id}" title="Delete">✕</span>
+      </div>`;
+    }).join("");
+  }
+
+  function renderPlanner(){
+    const weekStart = new Date(state.weekKey+"T00:00:00");
+    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate()+6);
+    const today = new Date();
+    const isCurrentWeek = state.weekKey === weekKeyFor(today);
+    const totalPlaced = Object.keys(state.placements).length;
+    const totalDone = Object.values(state.placements).filter(p=>p.done).length;
+
+    const counts={};
+    Object.values(state.placements).forEach(e=>{ if(e.done) counts[e.taskId]=(counts[e.taskId]||0)+1; });
+    const hoursByTask = state.tasks.map(t=>({name:t.name,hours:counts[t.id]||0,color:PALETTE[t.color%PALETTE.length].bg})).filter(r=>r.hours>0).sort((a,b)=>b.hours-a.hours);
+
+    let gridHTML = `<div class="weekgrid" style="grid-template-columns:44px repeat(${DAY_LABELS.length}, minmax(52px,1fr));">`;
+    gridHTML += `<div></div>`;
+    DAY_LABELS.forEach((d,i)=>{
+      const colDate = dateForColumn(state.weekKey,i);
+      const isToday = isSameDate(colDate,today);
+      gridHTML += `<div style="text-align:center; padding:4px 0;">
+        <div style="display:inline-flex; flex-direction:column; align-items:center; padding:4px 8px; border-radius:8px; background:${isToday?'var(--accentSoft)':'transparent'};">
+          <span style="font-size:12px; font-weight:700;">${d}</span>
+          <span class="mono" style="font-size:9px; color:${isToday?'var(--accent)':'var(--faint)'}; font-weight:${isToday?700:400};">${formatShortDate(colDate)}</span>
+        </div></div>`;
+    });
+    HOURS.forEach(h=>{
+      gridHTML += `<div class="mono" style="font-size:10px; color:var(--faint); text-align:right; padding-right:6px; padding-top:8px; white-space:nowrap;">${formatHour(h)}</div>`;
+      DAY_LABELS.forEach(d=>{
+        const cellKey = `${d}-${h}`;
+        const entry = state.placements[cellKey];
+        const pt = entry ? taskById(entry.taskId) : null;
+        const c = pt ? PALETTE[pt.color % PALETTE.length] : null;
+        let bg = "#FFFFFF", content = "";
+        if(pt){
+          if(entry.done){ bg = hexToRgba(c.bg,0.16); content = `<span style="color:${c.bg}; font-weight:700;">✓</span>`; }
+          else { bg = c.bg; content = `<span style="color:${c.text};">${esc(pt.name)}</span>`; }
+        }
+        gridHTML += `<div class="cell" data-cell="${cellKey}" style="background:${bg};">${content}</div>`;
+      });
+    });
+    gridHTML += `</div>`;
+
+    return `
+      <div class="card" style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; margin-bottom:14px;">
+        <button class="icon-btn" data-prev-week>&#8592;</button>
+        <div style="text-align:center;">
+          <div class="serif" style="font-size:16px; font-weight:600;">${formatShortDate(weekStart)} – ${formatShortDate(weekEnd)}</div>
+          <div style="display:flex; gap:8px; align-items:center; justify-content:center; margin-top:2px;">
+            ${!isCurrentWeek ? `<button data-jump-week style="font-size:11px; color:var(--accent); font-weight:600; background:none; border:none; padding:0;">Jump to this week</button>` : ""}
+            ${totalPlaced>0 ? `<span class="mono" style="font-size:11px; color:var(--faint);">${totalDone}/${totalPlaced} done</span>` : ""}
+          </div>
+        </div>
+        <button class="icon-btn" data-next-week>&#8594;</button>
+      </div>
+
+      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; align-items:center;">
+        ${renderChips()}
+        ${!state.showAddForm ? `<button data-add-task-open style="display:flex; align-items:center; gap:4px; background:transparent; border:2px dashed #B8B0A0; border-radius:20px; padding:7px 12px; font-size:13px; font-weight:600; color:var(--muted);">+ Add task</button>`
+          : `<div style="display:flex; gap:6px;">
+              <input data-new-task-input value="${esc(state.newTaskName)}" placeholder="Task name" autofocus style="border:1px solid #C8C0B0; border-radius:8px; padding:6px 10px; font-size:13px; width:140px;">
+              <button data-add-task-commit style="background:var(--ink); color:#fff; border:none; border-radius:8px; padding:6px 12px; font-size:13px; font-weight:600;">Add</button>
+            </div>`}
+        <button data-erase-toggle style="display:flex; align-items:center; gap:4px; background:${state.eraseMode?'var(--ink)':'transparent'}; color:${state.eraseMode?'#fff':'var(--muted)'}; border:2px solid #C8C0B0; border-radius:20px; padding:7px 12px; font-size:13px; font-weight:600;">⌫ Erase</button>
+      </div>
+
+      ${(state.selectedTaskId || state.eraseMode) ? `<div style="font-size:12px; color:var(--accent); font-weight:600; margin-bottom:10px;">
+        ${state.selectedTaskId ? `Placing "${esc(taskById(state.selectedTaskId)?.name||"")}" — tap onto slots.` : "Erase mode — tap filled slots to clear them."}
+      </div>` : ""}
+
+      <div style="overflow-x:auto;">${gridHTML}</div>
+
+      <div class="card" style="margin-top:18px;">
+        <h3 class="serif" style="font-size:15px; font-weight:600; margin:0 0 10px;">Hours completed this week</h3>
+        ${hoursByTask.length===0 ? `<p style="font-size:12.5px; color:var(--faint); margin:0; padding:10px 0;">No completed blocks yet — mark a block done to see it here.</p>` : barRows(hoursByTask)}
+      </div>
+
+      <div style="margin-top:18px; display:flex; gap:10px;">
+        ${!state.confirmClear
+          ? `<button data-clear-open class="btn" style="display:flex; align-items:center; gap:6px; color:var(--muted);">↺ Clear this week</button>`
+          : `<div style="display:flex; align-items:center; gap:8px; font-size:13px;">
+              <span style="color:var(--muted);">Clear this week's placements?</span>
+              <button data-clear-yes style="background:#D64545; color:#fff; border:none; border-radius:8px; padding:6px 12px; font-weight:600;">Yes, clear</button>
+              <button data-clear-no class="btn">Cancel</button>
+            </div>`}
+      </div>
+    `;
+  }
+
+  function renderAnalytics(){
+    const today = new Date();
+    const map = buildDailyMap();
+    const hasData = Object.keys(map).length>0;
+    if(!hasData){
+      return `<div class="card" style="padding:32px; text-align:center;"><p style="font-size:13px; color:var(--faint); margin:0;">No completed blocks yet — mark some done in the planner to see analytics here.</p></div>`;
+    }
+    const streaks = computeStreaks(map,today);
+    const heatmap = heatmapGrid(map,16,today);
+    const daily = dailySeries(map,30,today);
+    const weekly = weeklySeries(map,12,today);
+    const monthly = monthlySeries(map,6,today);
+    const subjects = subjectBreakdown(map).map(s=>{
+      const t = taskById(s.taskId);
+      return {name: t? t.name : "Deleted task", hours:s.hours, color: t? PALETTE[t.color%PALETTE.length].bg : "#C7CBD1"};
+    });
+
+    const dayLabels = ["Sat","","Mon","","Wed","","Fri"];
+    let hmHTML = `<div style="display:flex; align-items:flex-start; gap:4px; overflow-x:auto; padding-bottom:4px;">
+      <div style="display:flex; flex-direction:column; gap:4px; padding-right:4px; flex-shrink:0;">
+        ${dayLabels.map(l=>`<div style="height:12px; font-size:9px; color:var(--faint); line-height:12px;">${l}</div>`).join("")}
+      </div>
+      ${heatmap.map(col=>`<div style="display:flex; flex-direction:column; gap:4px; flex-shrink:0;">
+        ${col.map(cell=>`<div class="hm-cell" title="${cell.date}: ${cell.hours}h" style="background:${intensityColor(cell.hours)};"></div>`).join("")}
+      </div>`).join("")}
+    </div>
+    <div style="display:flex; align-items:center; gap:4px; margin-top:8px;">
+      <span style="font-size:10px; color:var(--faint);">Less</span>
+      ${[0,0.5,2,5,7].map(h=>`<span style="width:10px; height:10px; border-radius:2px; background:${intensityColor(h)}; display:inline-block;"></span>`).join("")}
+      <span style="font-size:10px; color:var(--faint);">More</span>
+    </div>`;
+
+    return `
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px;">
+        <div class="card" style="display:flex; align-items:center; gap:12px;">
+          <div style="width:40px; height:40px; border-radius:50%; background:var(--accentSoft); display:flex; align-items:center; justify-content:center;">🔥</div>
+          <div><div class="mono" style="font-size:24px; font-weight:600; line-height:1;">${streaks.longest}</div><div style="font-size:12px; color:var(--faint); margin-top:2px;">Longest streak (days)</div></div>
+        </div>
+        <div class="card" style="display:flex; align-items:center; gap:12px;">
+          <div style="width:40px; height:40px; border-radius:50%; background:var(--sunken); display:flex; align-items:center; justify-content:center;">📈</div>
+          <div><div class="mono" style="font-size:24px; font-weight:600; line-height:1;">${streaks.current}</div><div style="font-size:12px; color:var(--faint); margin-top:2px;">Current streak (days)</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px;"><h3 class="serif" style="font-size:15px; font-weight:600; margin:0 0 12px;">Study heat map — last 16 weeks</h3>${hmHTML}</div>
+
+      <div class="card" style="margin-bottom:16px;"><h3 class="serif" style="font-size:15px; font-weight:600; margin:0 0 12px;">Daily study time — last 30 days</h3>
+        ${simpleChart(daily, p=>new Date(p.date+"T00:00:00").toLocaleDateString(undefined,{weekday:"narrow"}), "#C1502E")}</div>
+
+      <div class="card" style="margin-bottom:16px;"><h3 class="serif" style="font-size:15px; font-weight:600; margin:0 0 12px;">Weekly study time — last 12 weeks</h3>
+        ${simpleChart(weekly, p=>formatShortDate(new Date(p.weekKey+"T00:00:00")), "#2D5C56")}</div>
+
+      <div class="card" style="margin-bottom:16px;"><h3 class="serif" style="font-size:15px; font-weight:600; margin:0 0 12px;">Monthly study time — last 6 months</h3>
+        ${simpleChart(monthly, p=>new Date(p.month+"-01T00:00:00").toLocaleDateString(undefined,{month:"short"}), "#5B4B8A")}</div>
+
+      <div class="card"><h3 class="serif" style="font-size:15px; font-weight:600; margin:0 0 12px;">Subject breakdown — all time</h3>
+        ${subjects.length===0 ? `<p style="font-size:13px; color:var(--faint); text-align:center; padding:20px;">No data yet.</p>` : barRows(subjects)}</div>
+    `;
+  }
+
+  function render(){
+    const app = document.getElementById("app");
+    app.innerHTML = `
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+        <div style="width:38px; height:38px; border-radius:14px; background:var(--ink); display:flex; align-items:center; justify-content:center; flex-shrink:0; color:var(--accent); font-size:16px;">🗓️</div>
+        <div style="flex:1;">
+          <h1 class="serif" style="font-size:22px; font-weight:600; margin:0;">Week Blocker</h1>
+          <p style="font-size:12.5px; color:var(--muted); margin:2px 0 0;">Tap tasks, then tap hours. Tap a filled block to mark it done.</p>
+        </div>
+        <button data-toggle-view class="btn">${state.view==="planner" ? "Analytics" : "Back to planner"}</button>
+      </div>
+      ${state.view==="planner" ? renderPlanner() : renderAnalytics()}
+    `;
+
+    if(state.renamingId){
+      const input = app.querySelector(`[data-rename-input="${state.renamingId}"]`);
+      if(input){ input.focus(); input.select(); }
+    }
+    if(state.showAddForm){
+      const input = app.querySelector("[data-new-task-input]");
+      if(input) input.focus();
+    }
+  }
+
+  document.getElementById("app").addEventListener("click", (e)=>{
+    const t = e.target;
+    if(t.closest("[data-prev-week]")) return goWeek(-7);
+    if(t.closest("[data-next-week]")) return goWeek(7);
+    if(t.closest("[data-jump-week]")) return goThisWeek();
+    if(t.closest("[data-toggle-view]")) return setState({view: state.view==="planner"?"analytics":"planner"});
+    if(t.closest("[data-erase-toggle]")) return setState({selectedTaskId:null, eraseMode:!state.eraseMode});
+    if(t.closest("[data-add-task-open]")) return setState({showAddForm:true});
+    if(t.closest("[data-add-task-commit]")) return addTask();
+    if(t.closest("[data-clear-open]")) return setState({confirmClear:true});
+    if(t.closest("[data-clear-no]")) return setState({confirmClear:false});
+    if(t.closest("[data-clear-yes]")){ state.placements={}; saveWeek(state.weekKey,{}); return setState({confirmClear:false}); }
+
+    const renameBtn = t.closest("[data-rename]");
+    if(renameBtn){ const id=renameBtn.getAttribute("data-rename"); const task=taskById(id); return setState({renamingId:id, renameValue:task?task.name:""}); }
+    const delBtn = t.closest("[data-delete]");
+    if(delBtn){ return deleteTask(delBtn.getAttribute("data-delete")); }
+    const chip = t.closest("[data-chip]");
+    if(chip){ const id=chip.getAttribute("data-chip"); return setState({eraseMode:false, selectedTaskId: state.selectedTaskId===id?null:id}); }
+    const cell = t.closest("[data-cell]");
+    if(cell){ return handleCellTap(cell.getAttribute("data-cell")); }
+  });
+
+  document.getElementById("app").addEventListener("input",(e)=>{
+    if(e.target.matches("[data-new-task-input]")) state.newTaskName = e.target.value;
+    if(e.target.matches("[data-rename-input]")) state.renameValue = e.target.value;
+  });
+  document.getElementById("app").addEventListener("keydown",(e)=>{
+    if(e.target.matches("[data-new-task-input]") && e.key==="Enter") addTask();
+    if(e.target.matches("[data-rename-input]")){
+      if(e.key==="Enter") commitRename();
+      if(e.key==="Escape") setState({renamingId:null, renameValue:""});
+    }
+  });
+  document.getElementById("app").addEventListener("blur",(e)=>{
+    if(e.target.matches("[data-rename-input]")) commitRename();
+  }, true);
+
+  render();
+})();
+</script>
+</body>
+</html>
