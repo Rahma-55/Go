@@ -46,8 +46,14 @@
 (function(){
   "use strict";
   const DAY_LABELS = ["Sat","Sun","Mon","Tue","Wed","Thu","Fri"];
-  const START_HOUR = 4, END_HOUR = 24;
-  const HOURS = Array.from({length:END_HOUR-START_HOUR},(_,i)=>START_HOUR+i);
+  const SCHEDULES = {
+    earlyBird: { start:4, end:22, label:"🌅 Early Bird" },
+    nightOwl: { start:10, end:28, label:"🌙 Night Owl" }
+  };
+  function getHours(mode){
+    const s = SCHEDULES[mode] || SCHEDULES.earlyBird;
+    return Array.from({length:s.end-s.start},(_,i)=>s.start+i);
+  }
   const PALETTE = [
     {bg:"#2D5C56",text:"#F4F1EA"},{bg:"#C1502E",text:"#F4F1EA"},{bg:"#5B4B8A",text:"#F4F1EA"},
     {bg:"#3E6B8A",text:"#F4F1EA"},{bg:"#8A6D2F",text:"#F4F1EA"},{bg:"#6B7A3D",text:"#F4F1EA"},
@@ -62,8 +68,9 @@
     return d.toISOString().slice(0,10);
   };
   const formatHour = (h) => {
-    const period = (h<12||h===24) ? "AM" : "PM";
-    let display = h%12; if(display===0) display=12;
+    const hh = h % 24;
+    const period = hh<12 ? "AM" : "PM";
+    let display = hh%12; if(display===0) display=12;
     return display+period;
   };
   const dateForColumn = (weekKey,i) => { const d=new Date(weekKey+"T00:00:00"); d.setDate(d.getDate()+i); return d; };
@@ -82,6 +89,8 @@
   }
   function loadTasks(){ try{ const r=localStorage.getItem("wb_tasks"); return r?JSON.parse(r):defaultTasks(); }catch(e){ return defaultTasks(); } }
   function saveTasks(t){ localStorage.setItem("wb_tasks",JSON.stringify(t)); }
+  function loadScheduleMode(){ try{ const r=localStorage.getItem("wb_schedule_mode"); return (r==="nightOwl"||r==="earlyBird")?r:"earlyBird"; }catch(e){ return "earlyBird"; } }
+  function saveScheduleMode(m){ localStorage.setItem("wb_schedule_mode", m); }
   function loadWeek(wk){ try{ const r=localStorage.getItem("wb_week_"+wk); return r?JSON.parse(r):{}; }catch(e){ return {}; } }
   function saveWeek(wk,p){ localStorage.setItem("wb_week_"+wk,JSON.stringify(p)); }
   function allWeekKeys(){
@@ -177,12 +186,19 @@
     renameValue: "",
     showAddForm: false,
     newTaskName: "",
+    scheduleMode: loadScheduleMode(),
   };
   state.placements = loadWeek(state.weekKey);
 
   function setState(patch){ Object.assign(state,patch); render(); }
 
   function taskById(id){ return state.tasks.find(t=>t.id===id); }
+
+  function toggleScheduleMode(){
+    const next = state.scheduleMode==="earlyBird" ? "nightOwl" : "earlyBird";
+    saveScheduleMode(next);
+    setState({scheduleMode: next});
+  }
 
   function goWeek(delta){
     const d = new Date(state.weekKey+"T00:00:00"); d.setDate(d.getDate()+delta);
@@ -291,6 +307,7 @@
           <span class="mono" style="font-size:9px; color:${isToday?'var(--accent)':'var(--faint)'}; font-weight:${isToday?700:400};">${formatShortDate(colDate)}</span>
         </div></div>`;
     });
+    const HOURS = getHours(state.scheduleMode);
     HOURS.forEach(h=>{
       gridHTML += `<div class="mono" style="font-size:10px; color:var(--faint); text-align:right; padding-right:6px; padding-top:8px; white-space:nowrap;">${formatHour(h)}</div>`;
       DAY_LABELS.forEach(d=>{
@@ -423,6 +440,7 @@
           <h1 class="serif" style="font-size:22px; font-weight:600; margin:0;">Week Blocker</h1>
           <p style="font-size:12.5px; color:var(--muted); margin:2px 0 0;">Tap tasks, then tap hours. Tap a filled block to mark it done.</p>
         </div>
+        <button data-toggle-schedule class="btn" style="margin-right:6px;">${SCHEDULES[state.scheduleMode].label}</button>
         <button data-toggle-view class="btn">${state.view==="planner" ? "Analytics" : "Back to planner"}</button>
       </div>
       ${state.view==="planner" ? renderPlanner() : renderAnalytics()}
@@ -444,6 +462,7 @@
     if(t.closest("[data-next-week]")) return goWeek(7);
     if(t.closest("[data-jump-week]")) return goThisWeek();
     if(t.closest("[data-toggle-view]")) return setState({view: state.view==="planner"?"analytics":"planner"});
+    if(t.closest("[data-toggle-schedule]")) return toggleScheduleMode();
     if(t.closest("[data-erase-toggle]")) return setState({selectedTaskId:null, eraseMode:!state.eraseMode});
     if(t.closest("[data-add-task-open]")) return setState({showAddForm:true});
     if(t.closest("[data-add-task-commit]")) return addTask();
