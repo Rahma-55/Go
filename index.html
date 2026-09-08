@@ -333,12 +333,37 @@
     }
   }
 
+  function loadRecurringEnabled(){ return localStorage.getItem("wb_recurring_enabled")==="1"; }
+  function loadTemplate(){ try{ const r=localStorage.getItem("wb_recurring_template"); return r?JSON.parse(r):null; }catch(e){ return null; } }
+  function saveTemplate(p){ localStorage.setItem("wb_recurring_template", JSON.stringify(p)); }
+  let recurringEnabled = loadRecurringEnabled();
+  function getWeekPlacementsWithRecurrence(wk){
+    let p = loadWeek(wk);
+    if(Object.keys(p).length===0 && recurringEnabled){
+      const tmpl = loadTemplate();
+      if(tmpl && Object.keys(tmpl).length>0){ p = {...tmpl}; saveWeek(wk,p); }
+    }
+    return p;
+  }
+  function toggleRecurring(){
+    if(!recurringEnabled){
+      saveTemplate(state.placements);
+      recurringEnabled = true;
+      localStorage.setItem("wb_recurring_enabled","1");
+      alert("Weekly repeat is on. This week's current layout will now auto-fill into any future week you open that's still empty. Weeks you've already customized won't be touched.\n\nTo update the template later, turn this off, set up the week you want as your new pattern, then turn it back on.");
+    } else {
+      recurringEnabled = false;
+      localStorage.setItem("wb_recurring_enabled","0");
+    }
+    render();
+  }
+
   function goWeek(delta){
     const d = new Date(state.weekKey+"T00:00:00"); d.setDate(d.getDate()+delta);
     const wk = weekKeyFor(d);
-    setState({weekKey:wk, placements:loadWeek(wk), confirmClear:false});
+    setState({weekKey:wk, placements:getWeekPlacementsWithRecurrence(wk), confirmClear:false});
   }
-  function goThisWeek(){ const wk=weekKeyFor(new Date()); setState({weekKey:wk, placements:loadWeek(wk), confirmClear:false}); }
+  function goThisWeek(){ const wk=weekKeyFor(new Date()); setState({weekKey:wk, placements:getWeekPlacementsWithRecurrence(wk), confirmClear:false}); }
 
   function placeTask(cellKey,taskId){ state.placements = {...state.placements,[cellKey]:{taskId,done:false}}; saveWeek(state.weekKey,state.placements); render(); }
   function clearCell(cellKey){ const n={...state.placements}; delete n[cellKey]; state.placements=n; saveWeek(state.weekKey,n); render(); }
@@ -623,6 +648,7 @@
         <button data-toggle-schedule class="btn">${SCHEDULES[state.scheduleMode].label}</button>
         <button data-toggle-backup class="btn ${state.showBackup?'active':''}">💾 Backup</button>
         <button data-toggle-notify class="btn ${notifyEnabled?'active':''}">${notifyEnabled ? '🔔 On' : '🔕 Notify'}</button>
+        <button data-toggle-recurring class="btn ${recurringEnabled?'active':''}">${recurringEnabled ? '🔁 Repeating' : '🔁 Repeat weekly'}</button>
       </div>
 
       ${state.showBackup ? `
@@ -669,6 +695,7 @@
     if(t.closest("[data-toggle-backup]")) return setState({showBackup: !state.showBackup});
     if(t.closest("[data-export-data]")) return exportData();
     if(t.closest("[data-toggle-notify]")) return toggleNotify();
+    if(t.closest("[data-toggle-recurring]")) return toggleRecurring();
     const viewBtn = t.closest("[data-set-view]");
     if(viewBtn) return setState({view: viewBtn.getAttribute("data-set-view")});
     if(t.closest("[data-erase-toggle]")) return setState({selectedTaskId:null, eraseMode:!state.eraseMode});
