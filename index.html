@@ -26,6 +26,7 @@
   #app { max-width:760px; margin:0 auto; padding:20px 14px 60px; }
   .card { background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:18px; }
   .btn { border-radius:10px; padding:8px 12px; font-size:12.5px; font-weight:600; border:1px solid var(--border); background:var(--surface); }
+  .btn.active { background:var(--ink); color:#fff; border-color:var(--ink); }
   .chip { display:flex; align-items:center; gap:6px; border-radius:20px; padding:7px 8px 7px 12px; font-size:13px; font-weight:600; cursor:pointer; border:2px solid transparent; }
   .chip.selected { border:2px solid #1E2421; box-shadow:0 0 0 3px rgba(30,36,33,0.12); }
   .chip .icon { opacity:0.8; display:flex; padding:2px; }
@@ -37,6 +38,12 @@
   .hm-cell { width:12px; height:12px; border-radius:3px; flex-shrink:0; }
   .icon-btn { background:transparent; border:none; padding:6px; display:flex; color:var(--muted); }
   input { font-family:inherit; }
+  .todo-row { display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid var(--border); }
+  .todo-row:last-child { border-bottom:none; }
+  .todo-check { width:20px; height:20px; border-radius:6px; border:2px solid var(--border); flex-shrink:0; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+  .todo-check.done { background:var(--accent); border-color:var(--accent); color:#fff; font-size:13px; font-weight:700; }
+  .todo-text { flex:1; font-size:14px; word-break:break-word; }
+  .todo-text.done { text-decoration:line-through; color:var(--faint); }
 </style>
 </head>
 <body>
@@ -98,6 +105,8 @@
     for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.indexOf("wb_week_")===0) keys.push(k.slice(8)); }
     return keys;
   }
+  function loadTodos(){ try{ const r=localStorage.getItem("wb_todos"); return r?JSON.parse(r):[]; }catch(e){ return []; } }
+  function saveTodos(list){ localStorage.setItem("wb_todos", JSON.stringify(list)); }
 
   function buildDailyMap(){
     const map = {};
@@ -187,6 +196,10 @@
     showAddForm: false,
     newTaskName: "",
     scheduleMode: loadScheduleMode(),
+    todos: loadTodos(),
+    newTodoText: "",
+    newTodoTaskId: "",
+    showBackup: false,
   };
   state.placements = loadWeek(state.weekKey);
 
@@ -198,6 +211,126 @@
     const next = state.scheduleMode==="earlyBird" ? "nightOwl" : "earlyBird";
     saveScheduleMode(next);
     setState({scheduleMode: next});
+  }
+
+  function addTodo(){
+    const text = state.newTodoText.trim();
+    if(!text) return;
+    const item = {id:"td"+Date.now(), text, done:false, taskId: state.newTodoTaskId || null};
+    state.todos = [...state.todos, item];
+    saveTodos(state.todos);
+    state.newTodoText = "";
+    render();
+  }
+  function toggleTodo(id){
+    state.todos = state.todos.map(t=> t.id===id ? {...t,done:!t.done} : t);
+    saveTodos(state.todos);
+    render();
+  }
+  function deleteTodo(id){
+    state.todos = state.todos.filter(t=>t.id!==id);
+    saveTodos(state.todos);
+    render();
+  }
+  function clearCompletedTodos(){
+    state.todos = state.todos.filter(t=>!t.done);
+    saveTodos(state.todos);
+    render();
+  }
+
+  function exportData(){
+    const dump = {};
+    for(let i=0;i<localStorage.length;i++){
+      const k = localStorage.key(i);
+      if(k && k.indexOf("wb_")===0) dump[k] = localStorage.getItem(k);
+    }
+    const blob = new Blob([JSON.stringify(dump,null,2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0,10);
+    a.href = url;
+    a.download = `week-blocker-backup-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  function importData(file){
+    const reader = new FileReader();
+    reader.onload = () => {
+      try{
+        const parsed = JSON.parse(reader.result);
+        let count = 0;
+        Object.keys(parsed).forEach(k=>{
+          if(k.indexOf("wb_")===0){ localStorage.setItem(k, parsed[k]); count++; }
+        });
+        state.tasks = loadTasks();
+        state.todos = loadTodos();
+        state.scheduleMode = loadScheduleMode();
+        state.placements = loadWeek(state.weekKey);
+        state.showBackup = false;
+        render();
+        alert(`Restored ${count} item(s) from backup.`);
+      }catch(e){
+        alert("Couldn't read that backup file. Make sure it's an unedited .json export from this app.");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function loadNotifyEnabled(){ return localStorage.getItem("wb_notify_enabled")==="1"; }
+  let notifyEnabled = loadNotifyEnabled();
+  const notifiedKeys = new Set();
+  function dayLabelForDate(date){
+    const wk = weekKeyFor(date);
+    for(let i=0;i<7;i++){ if(isSameDate(dateForColumn(wk,i),date)) return DAY_LABELS[i]; }
+    return null;
+  }
+  function showNotification(body){
+    try{ new Notification("Study block starting", {body}); }catch(e){}
+  }
+  function checkNotifications(){
+    if(!notifyEnabled || typeof Notification==="undefined" || Notification.permission!=="granted") return;
+    const now = new Date();
+    const sched = SCHEDULES[state.scheduleMode];
+    let checkDate = new Date(now);
+    let hour = now.getHours();
+    const minute = now.getMinutes();
+    if(minute>2) return;
+    if(hour < sched.start){ checkDate.setDate(checkDate.getDate()-1); hour += 24; }
+    const dayLabel = dayLabelForDate(checkDate);
+    if(!dayLabel) return;
+    const wk = weekKeyFor(checkDate);
+    const cellKey = `${dayLabel}-${hour}`;
+    const uniqueKey = wk+"|"+cellKey;
+    if(notifiedKeys.has(uniqueKey)) return;
+    const placements = loadWeek(wk);
+    const entry = placements[cellKey];
+    if(!entry || entry.done) return;
+    const tasksNow = loadTasks();
+    const task = tasksNow.find(t=>t.id===entry.taskId);
+    if(!task) return;
+    const linkedTodo = loadTodos().find(td=>!td.done && td.taskId===task.id);
+    const body = linkedTodo ? `${task.name}: ${linkedTodo.text}` : task.name;
+    showNotification(body);
+    notifiedKeys.add(uniqueKey);
+  }
+  function toggleNotify(){
+    if(typeof Notification === "undefined"){ alert("Notifications aren't supported in this browser."); return; }
+    if(!notifyEnabled){
+      Notification.requestPermission().then(perm=>{
+        if(perm==="granted"){
+          notifyEnabled = true;
+          localStorage.setItem("wb_notify_enabled","1");
+          alert("Notifications on. Keep this tab or the installed app open (even in the background) for reminders to fire — this won't wake up from being fully closed.");
+        }
+        render();
+      });
+    } else {
+      notifyEnabled = false;
+      localStorage.setItem("wb_notify_enabled","0");
+      render();
+    }
   }
 
   function goWeek(delta){
@@ -296,6 +429,9 @@
     Object.values(state.placements).forEach(e=>{ if(e.done) counts[e.taskId]=(counts[e.taskId]||0)+1; });
     const hoursByTask = state.tasks.map(t=>({name:t.name,hours:counts[t.id]||0,color:PALETTE[t.color%PALETTE.length].bg})).filter(r=>r.hours>0).sort((a,b)=>b.hours-a.hours);
 
+    const HOURS = getHours(state.scheduleMode);
+    const todoQueues = {};
+    state.tasks.forEach(tk=>{ todoQueues[tk.id] = state.todos.filter(td=>!td.done && td.taskId===tk.id).map(td=>td.text); });
     let gridHTML = `<div class="weekgrid" style="grid-template-columns:44px repeat(${DAY_LABELS.length}, minmax(52px,1fr));">`;
     gridHTML += `<div></div>`;
     DAY_LABELS.forEach((d,i)=>{
@@ -307,7 +443,6 @@
           <span class="mono" style="font-size:9px; color:${isToday?'var(--accent)':'var(--faint)'}; font-weight:${isToday?700:400};">${formatShortDate(colDate)}</span>
         </div></div>`;
     });
-    const HOURS = getHours(state.scheduleMode);
     HOURS.forEach(h=>{
       gridHTML += `<div class="mono" style="font-size:10px; color:var(--faint); text-align:right; padding-right:6px; padding-top:8px; white-space:nowrap;">${formatHour(h)}</div>`;
       DAY_LABELS.forEach(d=>{
@@ -318,7 +453,18 @@
         let bg = "#FFFFFF", content = "";
         if(pt){
           if(entry.done){ bg = hexToRgba(c.bg,0.16); content = `<span style="color:${c.bg}; font-weight:700;">✓</span>`; }
-          else { bg = c.bg; content = `<span style="color:${c.text};">${esc(pt.name)}</span>`; }
+          else {
+            bg = c.bg;
+            const queue = todoQueues[pt.id];
+            const linked = (queue && queue.length) ? queue.shift() : null;
+            const fullLabel = linked ? `${pt.name}: ${linked}` : pt.name;
+            content = linked
+              ? `<span style="color:${c.text}; display:flex; flex-direction:column; align-items:center; line-height:1.15; width:100%; padding:0 2px;" title="${esc(fullLabel)}">
+                  <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; font-size:8px; opacity:0.85;">${esc(pt.name)}</span>
+                  <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; font-weight:800;">${esc(linked)}</span>
+                 </span>`
+              : `<span style="color:${c.text}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; padding:0 2px;" title="${esc(fullLabel)}">${esc(fullLabel)}</span>`;
+          }
         }
         gridHTML += `<div class="cell" data-cell="${cellKey}" style="background:${bg};">${content}</div>`;
       });
@@ -367,6 +513,40 @@
               <button data-clear-yes style="background:#D64545; color:#fff; border:none; border-radius:8px; padding:6px 12px; font-weight:600;">Yes, clear</button>
               <button data-clear-no class="btn">Cancel</button>
             </div>`}
+      </div>
+    `;
+  }
+
+  function renderTodos(){
+    const pending = state.todos.filter(t=>!t.done);
+    const done = state.todos.filter(t=>t.done);
+    const ordered = [...pending, ...done];
+    const taskOptions = state.tasks.map(t=>`<option value="${t.id}" ${state.newTodoTaskId===t.id?'selected':''}>${esc(t.name)}</option>`).join("");
+    return `
+      <div class="card" style="margin-bottom:14px;">
+        <h3 class="serif" style="font-size:15px; font-weight:600; margin:0 0 12px;">To-Do</h3>
+        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;">
+          <input data-new-todo-input value="${esc(state.newTodoText)}" placeholder="Add a task…" style="flex:1; min-width:140px; border:1px solid #C8C0B0; border-radius:8px; padding:9px 12px; font-size:14px;">
+          <select data-new-todo-task style="border:1px solid #C8C0B0; border-radius:8px; padding:9px 8px; font-size:13px; max-width:140px;">
+            <option value="">No tag</option>
+            ${taskOptions}
+          </select>
+          <button data-add-todo-commit style="background:var(--ink); color:#fff; border:none; border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600;">Add</button>
+        </div>
+        <p style="font-size:11px; color:var(--faint); margin:-8px 0 14px;">Tag a to-do to a task and it'll show up on that task's blocks in the planner.</p>
+        ${ordered.length===0
+          ? `<p style="font-size:12.5px; color:var(--faint); margin:0; padding:10px 0;">Nothing on your list yet — add something above.</p>`
+          : ordered.map(t=>{
+              const tagTask = t.taskId ? taskById(t.taskId) : null;
+              const tagPill = tagTask ? `<span class="mono" style="font-size:9px; font-weight:700; padding:2px 7px; border-radius:10px; background:${PALETTE[tagTask.color%PALETTE.length].bg}; color:${PALETTE[tagTask.color%PALETTE.length].text}; flex-shrink:0;">${esc(tagTask.name)}</span>` : "";
+              return `
+            <div class="todo-row">
+              <div class="todo-check ${t.done?'done':''}" data-todo-toggle="${t.id}">${t.done?'✓':''}</div>
+              <div class="todo-text ${t.done?'done':''}">${esc(t.text)}</div>
+              ${tagPill}
+              <span class="icon" data-todo-delete="${t.id}" style="opacity:0.6; padding:4px; color:var(--faint);">✕</span>
+            </div>`;}).join("")}
+        ${done.length>0 ? `<div style="margin-top:12px;"><button data-clear-completed-todos class="btn" style="color:var(--muted);">Clear completed (${done.length})</button></div>` : ""}
       </div>
     `;
   }
@@ -434,16 +614,40 @@
   function render(){
     const app = document.getElementById("app");
     app.innerHTML = `
-      <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
         <div style="width:38px; height:38px; border-radius:14px; background:var(--ink); display:flex; align-items:center; justify-content:center; flex-shrink:0; color:var(--accent); font-size:16px;">🗓️</div>
-        <div style="flex:1;">
+        <div style="flex:1; min-width:140px;">
           <h1 class="serif" style="font-size:22px; font-weight:600; margin:0;">Week Blocker</h1>
           <p style="font-size:12.5px; color:var(--muted); margin:2px 0 0;">Tap tasks, then tap hours. Tap a filled block to mark it done.</p>
         </div>
-        <button data-toggle-schedule class="btn" style="margin-right:6px;">${SCHEDULES[state.scheduleMode].label}</button>
-        <button data-toggle-view class="btn">${state.view==="planner" ? "Analytics" : "Back to planner"}</button>
+        <button data-toggle-schedule class="btn">${SCHEDULES[state.scheduleMode].label}</button>
+        <button data-toggle-backup class="btn ${state.showBackup?'active':''}">💾 Backup</button>
+        <button data-toggle-notify class="btn ${notifyEnabled?'active':''}">${notifyEnabled ? '🔔 On' : '🔕 Notify'}</button>
       </div>
-      ${state.view==="planner" ? renderPlanner() : renderAnalytics()}
+
+      ${state.showBackup ? `
+        <div class="card" style="margin-bottom:16px;">
+          <h3 class="serif" style="font-size:15px; font-weight:600; margin:0 0 8px;">Backup your data</h3>
+          <p style="font-size:12px; color:var(--faint); margin:0 0 14px;">Your tasks, schedule, and to-dos are saved only on this device. Download a backup so you don't lose them if you clear your browser or switch phones.</p>
+          <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+            <button data-export-data style="background:var(--ink); color:#fff; border:none; border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600;">⬇ Export backup</button>
+            <label style="background:transparent; border:1px solid var(--border); border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600; color:var(--muted); cursor:pointer;">
+              ⬆ Import backup
+              <input type="file" accept=".json,application/json" data-import-file style="display:none;">
+            </label>
+          </div>
+        </div>
+      ` : ""}
+
+      <div style="display:flex; gap:8px; margin-bottom:16px;">
+        <button data-set-view="planner" class="btn ${state.view==='planner'?'active':''}" style="flex:1;">Planner</button>
+        <button data-set-view="todos" class="btn ${state.view==='todos'?'active':''}" style="flex:1;">To-Do</button>
+        <button data-set-view="analytics" class="btn ${state.view==='analytics'?'active':''}" style="flex:1;">Analytics</button>
+      </div>
+
+      ${notifyEnabled ? `<p style="font-size:11px; color:var(--faint); margin:-8px 0 16px; text-align:center;">🔔 Reminders are on — keep this app open (even in the background) for them to fire. They won't run if the app is fully closed.</p>` : ""}
+
+      ${state.view==="planner" ? renderPlanner() : state.view==="todos" ? renderTodos() : renderAnalytics()}
     `;
 
     if(state.renamingId){
@@ -461,14 +665,24 @@
     if(t.closest("[data-prev-week]")) return goWeek(-7);
     if(t.closest("[data-next-week]")) return goWeek(7);
     if(t.closest("[data-jump-week]")) return goThisWeek();
-    if(t.closest("[data-toggle-view]")) return setState({view: state.view==="planner"?"analytics":"planner"});
     if(t.closest("[data-toggle-schedule]")) return toggleScheduleMode();
+    if(t.closest("[data-toggle-backup]")) return setState({showBackup: !state.showBackup});
+    if(t.closest("[data-export-data]")) return exportData();
+    if(t.closest("[data-toggle-notify]")) return toggleNotify();
+    const viewBtn = t.closest("[data-set-view]");
+    if(viewBtn) return setState({view: viewBtn.getAttribute("data-set-view")});
     if(t.closest("[data-erase-toggle]")) return setState({selectedTaskId:null, eraseMode:!state.eraseMode});
     if(t.closest("[data-add-task-open]")) return setState({showAddForm:true});
     if(t.closest("[data-add-task-commit]")) return addTask();
     if(t.closest("[data-clear-open]")) return setState({confirmClear:true});
     if(t.closest("[data-clear-no]")) return setState({confirmClear:false});
     if(t.closest("[data-clear-yes]")){ state.placements={}; saveWeek(state.weekKey,{}); return setState({confirmClear:false}); }
+    if(t.closest("[data-add-todo-commit]")) return addTodo();
+    if(t.closest("[data-clear-completed-todos]")) return clearCompletedTodos();
+    const todoToggle = t.closest("[data-todo-toggle]");
+    if(todoToggle) return toggleTodo(todoToggle.getAttribute("data-todo-toggle"));
+    const todoDelete = t.closest("[data-todo-delete]");
+    if(todoDelete) return deleteTodo(todoDelete.getAttribute("data-todo-delete"));
 
     const renameBtn = t.closest("[data-rename]");
     if(renameBtn){ const id=renameBtn.getAttribute("data-rename"); const task=taskById(id); return setState({renamingId:id, renameValue:task?task.name:""}); }
@@ -483,9 +697,19 @@
   document.getElementById("app").addEventListener("input",(e)=>{
     if(e.target.matches("[data-new-task-input]")) state.newTaskName = e.target.value;
     if(e.target.matches("[data-rename-input]")) state.renameValue = e.target.value;
+    if(e.target.matches("[data-new-todo-input]")) state.newTodoText = e.target.value;
+    if(e.target.matches("[data-new-todo-task]")) state.newTodoTaskId = e.target.value;
+  });
+  document.getElementById("app").addEventListener("change",(e)=>{
+    if(e.target.matches("[data-new-todo-task]")) state.newTodoTaskId = e.target.value;
+    if(e.target.matches("[data-import-file]") && e.target.files && e.target.files[0]){
+      importData(e.target.files[0]);
+      e.target.value = "";
+    }
   });
   document.getElementById("app").addEventListener("keydown",(e)=>{
     if(e.target.matches("[data-new-task-input]") && e.key==="Enter") addTask();
+    if(e.target.matches("[data-new-todo-input]") && e.key==="Enter") addTodo();
     if(e.target.matches("[data-rename-input]")){
       if(e.key==="Enter") commitRename();
       if(e.key==="Escape") setState({renamingId:null, renameValue:""});
@@ -496,6 +720,8 @@
   }, true);
 
   render();
+  setInterval(checkNotifications, 30000);
+  checkNotifications();
 })();
 </script>
 </body>
